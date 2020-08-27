@@ -668,12 +668,13 @@ class DahliaViewer():
             return False
 
         for tag in state['tags']:
-            if tag not in PREDEFINED_TAGS and tag not in PREAPPROVED_ANNOTATORS:
-                if tag.split('_')[0] in PREAPPROVED_ANNOTATORS:
-                    pass  # OK if tag is prepended with annotator_id
-                else:
-                    self.status_print("SAVE FAILED %s: tag %s not in %s nor in preapproved annotator list" % (neuron_name, tag, PREDEFINED_TAGS))
-                    return False
+            prepend_annotator = tag.split('_')[0]
+            if tag not in PREDEFINED_TAGS and prepend_annotator not in PREAPPROVED_ANNOTATORS and tag not in PREDEFINED_CELL_TYPES:
+                # if  in PREAPPROVED_ANNOTATORS:
+                #     pass  # OK if tag is prepended with annotator_id
+                # else:
+                self.status_print("SAVE FAILED %s: tag %s not in %s nor in preapproved annotator list" % (neuron_name, tag, PREDEFINED_TAGS))
+                return False
 
         if state['soma_loc'] == '':
             self.status_print("SAVE FAILED %s: soma_loc is empty" % (neuron_name))

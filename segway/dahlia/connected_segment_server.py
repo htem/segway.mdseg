@@ -96,7 +96,6 @@ class ConnectedSegmentServer():
         # assert False
         return []
 
-
     @cached(cache=RRCache(maxsize=128*1024*1024))
     def get_super_cc(
             self,

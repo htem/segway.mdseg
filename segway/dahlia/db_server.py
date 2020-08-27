@@ -83,13 +83,18 @@ PREDEFINED_CELL_TYPES = [
 
     'pc',
     'grc',
-    'basket',
     'glia',
-    'golgi',
-    'stellate',
-    'lugaro',
 
+    'stellate',
+    'basket',
+
+    'golgi',
+    'lugaro',
+    'ubc',
+    'globular',
     'cc',
+
+    'myelin',
 
     'mf',
     'pf',
@@ -143,6 +148,7 @@ class Neuron():
 
         self.segments = segments
         self.children_segments = []
+        self.segments_by_children = {}
         self.blacklist_segments = blacklist_segments
         self.cell_type = cell_type
         self.cell_subtype = cell_subtype
@@ -485,9 +491,10 @@ class NeuronDBServer():
         blacklist_segments = set(neuron.blacklist_segments)
         children = []
         children_segments = set()
+        segments_by_children = {}
         children_blacklist = set()
         for c in collection.find({'parent_segment': neuron_name}):
-            # print(c['neuron_name'])
+            segments_by_children[c['neuron_name']] = c['segments']
             children_segments |= set([int(n) for n in c['segments']])
             children_blacklist |= set([int(n) for n in c['blacklist_segments']])
             children.append(c['neuron_name'])
@@ -503,6 +510,7 @@ class NeuronDBServer():
         neuron.blacklist_segments = list(blacklist_segments)
         neuron.children = list(set(children))
         neuron.children_segments = list(children_segments)
+        neuron.segments_by_children = segments_by_children
 
         return neuron
 
