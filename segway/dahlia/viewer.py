@@ -454,15 +454,34 @@ class DahliaViewer():
         self.set_selections(active)
         self.status_print("Show %d active blacklisted segments"%len(active))
 
-    def _grow_segments(self, s):
-        selected = DahliaViewer._get_viewer_segments(s)
-        cc = self.prserver.find_connected_super_fragments(
-            selected_super_fragments=selected,
-            no_grow_super_fragments=[],
-            threshold=.5,
-            z_only=False,
-            )
-        return cc
+    # def _grow_segments(self, s):
+    #     selected = DahliaViewer._get_viewer_segments(s)
+    #     cc = self.prserver.find_connected_super_fragments(
+    #         selected_super_fragments=selected,
+    #         no_grow_super_fragments=[],
+    #         threshold=.5,
+    #         z_only=False,
+    #         )
+    #     return cc
+
+    def __filter_blacklist_seg(self, blacklist, segments):
+        # selected = DahliaViewer._get_viewer_segments(s)
+        filtered_blacklist = []
+        segments = set(segments)
+        for b in set(blacklist):
+            if b in segments:
+                filtered_blacklist.append(b)
+            else:
+                cc = self.prserver.find_connected_super_fragments(
+                    selected_super_fragments=[b],
+                    no_grow_super_fragments=[],
+                    threshold=.5,
+                    z_only=False,
+                    )
+
+                if len(set(cc) & segments):
+                    filtered_blacklist.append(b)
+        return filtered_blacklist
 
     def grow_segments(self, s, z_only=False, super_threshold=False, diff_grow=False):
 
@@ -582,14 +601,14 @@ class DahliaViewer():
         soma_xyz_loc = [int(k) for k in soma_xyz_loc.split(', ')]
         # if isinstance(state['soma_loc'], str):
         #     soma_xyz_loc = [n.strip() for n in soma_xyz_loc]
-        print('_set_neuron_from_state:soma_xyz_loc:', soma_xyz_loc)
+        # print('_set_neuron_from_state:soma_xyz_loc:', soma_xyz_loc)
         voxel_size_xyz = [16, 16, 40]
         soma_zyx_loc = {
             'z': int(soma_xyz_loc[2])*voxel_size_xyz[2],
             'y': int(soma_xyz_loc[1])*voxel_size_xyz[1],
             'x': int(soma_xyz_loc[0])*voxel_size_xyz[0],
         }
-        print('soma_zyx_loc:', soma_zyx_loc)
+        # print('soma_zyx_loc:', soma_zyx_loc)
         neuron.soma_loc = soma_zyx_loc
 
     def _get_state_from_neuron(self, neuron):
@@ -738,15 +757,22 @@ class DahliaViewer():
             self.status_print("SAVE FAILED %s: neuron not superset of previously saved version" % neuron_name)
             return
 
-        try:
-            grow_once_segments = self._grow_segments(s)
-        except Exception as e:
-            # print(e)
-            print("grow_once_segments failed")
-            grow_once_segments = []
+        # try:
+        #     grow_once_segments = self._grow_segments(s)
+        # except Exception as e:
+        #     # print(e)
+        #     print("grow_once_segments failed")
+        #     grow_once_segments = []
+        # total_blacklist_segments = neuron.blacklist_segments
+        # for s in total_blacklist_segments:
+        filtered_blacklist = self.__filter_blacklist_seg(
+            neuron.blacklist_segments, neuron.segments)
+
+        print(f'filtered_blacklist: {filtered_blacklist}')
 
         try:
-            neuron.finalize(grow_once_segments=grow_once_segments)
+            neuron.finalize(blacklist_segments=filtered_blacklist)
+            # neuron.finalize(grow_once_segments=grow_once_segments)
         except Exception as e:
             print(e)
             self.status_print("SAVE FAILED %s: unknown exception during neuron.finalize()" % neuron_name)
@@ -822,7 +848,7 @@ class DahliaViewer():
             self.status_print("SEARCH FAILED: no query provided")
             return
 
-        res = self.neuron_db.find_neuron(query)
+        res = self.neuron_db.find_neuron_filtered(query)
         count = len(res)
         res = ', '.join(res)
 
@@ -954,7 +980,11 @@ class DahliaViewer():
             if current_color_map is None:
                 current_color_map = {}
 
-        color_mapping = color_mapping.split('\n')
+        color_mapping_split = []
+        for l in color_mapping.split('\n'):
+            for ll in l.split(', '):
+                print(ll)
+                color_mapping_split.append(ll)
 
         total_segs = []
         if also_load_neurons and not clear_before_load:
@@ -962,7 +992,7 @@ class DahliaViewer():
 
         default_color_index = 0
 
-        for line in color_mapping:
+        for line in color_mapping_split:
 
             if len(line) == 0:
                 continue
@@ -970,10 +1000,6 @@ class DahliaViewer():
             line = line.split(': ')
 
             if len(line) == 1:
-                # no color specified--use default
-                # if default_color_index >= len(default_color_order):
-                #     self.status_print("FAILED: Not enough default colors!")
-                #     return
                 idx = default_color_index % len(default_color_order)
                 color = color_map[default_color_order[idx]]
                 default_color_index += 1
@@ -1005,14 +1031,16 @@ class DahliaViewer():
                     segs.extend([str(seg) for seg in neuron.segments])
                     i += 1
                     subsegment_name = '%s_%d' % (name, i)
+                for seg in segs:
+                    current_color_map[seg] = color
 
             elif self.neuron_db.exists_neuron(name):
                 neuron = self.neuron_db.get_neuron(name, with_children=True)
                 self._print_xyz_loc(neuron)
                 segs.extend([str(seg) for seg in neuron.segments])
+                for seg in segs:
+                    current_color_map[seg] = color
 
-            for seg in segs:
-                current_color_map[seg] = color
             total_segs.extend(segs)
 
         self._set_wrapped_property('segmentColors', dict(current_color_map))

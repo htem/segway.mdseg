@@ -207,7 +207,8 @@ class Neuron():
 
     def finalize(
             self,
-            grow_once_segments=None,
+            # grow_once_segments=None,
+            blacklist_segments=None,
             ):
         assert self.name != ''
         assert len(self.segments)
@@ -216,10 +217,13 @@ class Neuron():
 
         assert self.checked_subset
 
-        if grow_once_segments is not None:
-            self.blacklist_segments = set(self.blacklist_segments).intersection(grow_once_segments)
-        else:
-            self.blacklist_segments = set(self.blacklist_segments).intersection(self.segments)
+        # if grow_once_segments is not None:
+        #     self.blacklist_segments = set(self.blacklist_segments).intersection(grow_once_segments)
+        # else:
+        #     self.blacklist_segments = set(self.blacklist_segments).intersection(self.segments)
+
+        if blacklist_segments:
+            self.blacklist_segments = blacklist_segments
 
         assert self.annotator in PREAPPROVED_ANNOTATORS
         assert self.cell_type in PREDEFINED_CELL_TYPES
@@ -349,6 +353,7 @@ class NeuronDBServer():
         self.segment_collection_name = segment_collection + '_bak'
 
         self.segment_map_cache = {}
+        # self.segment_map_cache_neurons = set()
 
         try:
             self.__connect()
@@ -495,15 +500,22 @@ class NeuronDBServer():
         children_blacklist = set()
         for c in collection.find({'parent_segment': neuron_name}):
             segments_by_children[c['neuron_name']] = c['segments']
-            children_segments |= set([int(n) for n in c['segments']])
+            child_segments = set([int(n) for n in c['segments']])
+
+            self.__add_segment_map(child_segments, c['neuron_name'])
+
+            children_segments |= child_segments
             children_blacklist |= set([int(n) for n in c['blacklist_segments']])
             children.append(c['neuron_name'])
+
+        segs_without_children = segs - children_segments
+        self.__add_segment_map(segs_without_children, neuron.name)
 
         if with_children:
             segs |= children_segments
             blacklist_segments |= children_blacklist
         else:
-            segs -= children_segments
+            segs = segs_without_children
             blacklist_segments -= children_blacklist
 
         neuron.segments = list(segs)
@@ -523,6 +535,22 @@ class NeuronDBServer():
         for item in res:
             ret.append(item['neuron_name'])
         return ret
+
+    def find_neuron_filtered(self, query):
+        res = self.find_neuron(query)
+
+        query_type = query.get('cell_type', None)
+        if query_type:
+            filtered_res = []
+            for item in res:
+                if query_type != 'axon' and 'axon' in item:
+                    continue
+                if query_type != 'dendrite' and 'dendrite' in item:
+                    continue
+                filtered_res.append(item)
+
+            res = filtered_res
+        return res
 
     def find_neuron_with_segment_id(self, segment_id):
         item = self.segments.find_one({'segment_id': segment_id})
@@ -601,7 +629,7 @@ class NeuronDBServer():
 
         if not override_assignment:
             for s in neuron.segments:
-                mapping = self.__assert_segment_map(s, neuron_name)
+                mapping = self.__check_segment_belongs_to_neuron(s, neuron_name)
                 if mapping is not True:
                     return (False, "Fragment %s already assigned to %s" % (s, mapping))
 
@@ -617,6 +645,8 @@ class NeuronDBServer():
 
         self.__save_neuron(neuron)
 
+        # at this point, neuron.segments list is guaranteed to not contain
+        # its children segments
         self.__map_segments_to_neuron(neuron.segments, neuron.name)
 
     def __map_segments_to_neuron(self, segment_ids, neuron_id):
@@ -625,11 +655,15 @@ class NeuronDBServer():
 
         to_add = []
         for sid in segment_ids:
-            self.__cache_segment_map(sid)
-            if self.segment_map_cache[sid] == neuron_id:
+            # self.__cache_segment_map(sid)
+            existing_mapping = self.__get_segment_map(sid)
+            # if self.segment_map_cache[sid] == neuron_id:
+            if existing_mapping == neuron_id:
                 pass  # no need to update this segment
             else:
                 to_add.append(sid)
+
+        print(f'to_add: {to_add}')
 
         # now we need to update segments database
         # always update with the latest copy
@@ -654,25 +688,48 @@ class NeuronDBServer():
                 raise
 
         # finally update cache
-        for sid in segment_ids:
-            self.segment_map_cache[sid] = neuron_id
+        self.__add_segment_map(segment_ids, neuron_id)
+        # for sid in segment_ids:
+        #     self.segment_map_cache[sid] = neuron_id
 
-    def __assert_segment_map(self, segment_id, neuron_id):
+    # def __check_segment_belongs_to_neuron(self, segment_id, neuron_id):
+    #     segment_id = int(segment_id)
+    #     self.__cache_segment_map(segment_id)
+    #     mapping = self.segment_map_cache[segment_id]
+    #     if mapping == neuron_id or mapping is None or mapping == '' or mapping in neuron_id:
+    #         return True
+    #     else:
+    #         return mapping
+
+    def __check_segment_belongs_to_neuron(self, segment_id, neuron_id):
         segment_id = int(segment_id)
-        self.__cache_segment_map(segment_id)
-        mapping = self.segment_map_cache[segment_id]
-        if mapping == neuron_id or mapping is None or mapping == '' or mapping in neuron_id:
+        mapping = self.__get_segment_map(segment_id)
+        # check if (1) mapped to the same neuron, (2) unmapped, or (3) is mapped to parent
+        if mapping == neuron_id or mapping is None or mapping in neuron_id:
             return True
         else:
             return mapping
 
-    def __cache_segment_map(self, segment_id):
+    # def __cache_segment_map(self, segment_id):
+    #     if segment_id not in self.segment_map_cache:
+    #         item = self.segments.find_one({'segment_id': segment_id})
+    #         if item is None:
+    #             self.segment_map_cache[segment_id] = ''
+    #         else:
+    #             self.segment_map_cache[segment_id] = item['neuron_name']
+
+    def __add_segment_map(self, segment_ids, neuron_id):
+        for seg in segment_ids:
+            self.segment_map_cache[seg] = neuron_id
+
+    def __get_segment_map(self, segment_id):
         if segment_id not in self.segment_map_cache:
             item = self.segments.find_one({'segment_id': segment_id})
             if item is None:
-                self.segment_map_cache[segment_id] = ''
+                self.segment_map_cache[segment_id] = None
             else:
                 self.segment_map_cache[segment_id] = item['neuron_name']
+        return self.segment_map_cache[segment_id]
 
     def __save_neuron(self, neuron):
 
