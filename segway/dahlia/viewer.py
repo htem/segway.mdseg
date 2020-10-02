@@ -175,10 +175,12 @@ class DahliaViewer():
         viewer.actions.add('copy-selections', lambda s: self.copy_selections(s))
         viewer.actions.add('cut-selections', lambda s: self.paste_selections(s, cut=True))
         viewer.actions.add('paste-selections', lambda s: self.paste_selections(s, cut=False))
+        viewer.actions.add('join-selections', self.join_selections)
         with viewer.config_state.txn() as s:
             s.input_event_bindings.viewer['control+shift+keyc'] = 'copy-selections'
             s.input_event_bindings.viewer['control+keyx'] = 'cut-selections'
             s.input_event_bindings.viewer['control+shift+keyv'] = 'paste-selections'
+            s.input_event_bindings.viewer['control+keyj'] = 'join-selections'
 
         viewer.actions.add('undo-selections', self.undo_selections)
         with viewer.config_state.txn() as s:
@@ -272,7 +274,7 @@ class DahliaViewer():
         with viewer.config_state.txn() as s:
             s.input_event_bindings.viewer['control+keyf'] = 'search-neuron'
 
-        # Search functionality
+        # color tabs
         viewer.actions.add('set-color', self.set_color)
         viewer.actions.add('clear-color', self.clear_color)
         with viewer.config_state.txn() as s:
@@ -527,6 +529,82 @@ class DahliaViewer():
 
         self.status_print("Grown segments by %d" % grow_count)
 
+    def join_selections(self, s):
+        # for each selected segment, find a single neuron object
+        # previously saved. If there are multiple, error out.
+        # then add the selected segments to the object
+
+        selected_segs = DahliaViewer._get_viewer_segments(s)
+        annotator = self._get_ui_annotator()
+        if annotator not in PREAPPROVED_ANNOTATORS:
+            self.status_print("SAVE FAILED: annotator %s not in preapproved list %s" % (annotator, PREAPPROVED_ANNOTATORS))
+            return False
+
+
+        # names = set([None])
+        name_list = []
+        for seg in selected_segs:
+            name = self.neuron_db.find_neuron_with_segment_id(seg)
+            if name:
+                name_list.append(name)
+            # names.add(name)
+        # names.remove(None)
+        names = set(name_list)
+
+        if len(names) == 0:
+            self.status_print("ERROR: None of the selections are saved as neurons")
+            return
+        elif len(names) > 1:
+            self.status_print(f"ERROR: Selections saved as multiple objects {names}")
+            return
+
+        if len(name_list) == len(selected_segs):
+            self.status_print(f"ERROR: all segments already joined to {name_list[0]}")
+            return
+
+
+        neuron_name = name_list[0]
+        neuron = self.neuron_db.get_neuron(neuron_name, with_children=False)
+
+        # make various checks
+        ret = neuron.check_subset()
+        if not ret:
+            self.status_print("SAVE FAILED %s: neuron not superset of previously saved version" % neuron_name)
+            return
+
+        neuron.annotator = annotator
+        neuron.segments.extend(selected_segs)
+        # neuron.finalize()
+        try:
+            neuron.finalize()
+            # neuron.finalize(grow_once_segments=grow_once_segments)
+        except Exception as e:
+            print(e)
+            self.status_print("SAVE FAILED %s: unknown exception during neuron.finalize()" % neuron_name)
+            return
+        try:
+            ret, msg = self.neuron_db.check_neuron_mapping(neuron)
+            if ret is not True:
+                self.status_print("SAVE FAILED %s: check_neuron_mapping: %s" % (neuron_name, msg))
+                return
+        except Exception as e:
+            print(e)
+            self.status_print("SAVE FAILED %s: unknown exception during neuron_db.check_neuron_mapping()" % neuron_name)
+            return
+
+        # finally save
+        try:
+            self.neuron_db.save_neuron(neuron)
+        except Exception as e:
+            print(e)
+            self.status_print("SAVE FAILED %s: unknown exception during neuron_db.save_neuron()" % neuron_name)
+            return
+
+        self.status_print(f"Sucessfully joined segments to ({neuron_name})")
+
+
+
+
     def save_selections(self, s, n):
         self._save_undo_history(no_inc=True)
         selected = DahliaViewer._get_viewer_segments(s)
@@ -562,6 +640,11 @@ class DahliaViewer():
         neuron_state['cell_type'] = ''
         neuron_state['tags'] = []
         return neuron_state
+
+    def _get_ui_annotator(self):
+        layer_json = self.viewer.state.layers['seg'].layer.to_json()
+        layer_json = layer_json['pr']
+        return layer_json['prAnnotator']
 
     def _set_state_from_viewer_state(self, target_state):
         layer_json = self.viewer.state.layers['seg'].layer.to_json()
@@ -901,6 +984,11 @@ class DahliaViewer():
             self.status_print("ERROR: selected segment not saved as neuron")
             return
 
+        if '.' in name:
+            attrs = self.viewer.state.layers['seg'].layer.to_json()
+            if not (attrs['neurondb']['dbLoadWithoutChildren'] == "1"):
+                name = name.rsplit('.')[0]
+
         return self._load_neuron(name, with_children=True)
 
     def _load_neuron(self, name, with_children):
@@ -965,6 +1053,8 @@ class DahliaViewer():
 
     def clNeuronColorButton(self, s):
 
+        attrs = self.viewer.state.layers['seg'].layer.to_json()
+
         color_mapping = self._get_non_wrapped_property('colors', 'clNeuronColor')
 
         if len(color_mapping) == 0:
@@ -973,6 +1063,12 @@ class DahliaViewer():
 
         also_load_neurons = self._get_non_wrapped_property('colors', 'clAlsoLoadNeurons') == '1'
         clear_before_load = self._get_non_wrapped_property('colors', 'clClearBeforeLoad') == '1'
+
+        with_children = True
+        if attrs['neurondb']['dbLoadWithoutChildren'] == "1":
+            with_children = False
+
+        neuron_loaded = False
 
         current_color_map = {}
         if not clear_before_load:
@@ -1035,11 +1131,23 @@ class DahliaViewer():
                     current_color_map[seg] = color
 
             elif self.neuron_db.exists_neuron(name):
-                neuron = self.neuron_db.get_neuron(name, with_children=True)
+                neuron = self.neuron_db.get_neuron(name, with_children=with_children)
                 self._print_xyz_loc(neuron)
                 segs.extend([str(seg) for seg in neuron.segments])
                 for seg in segs:
                     current_color_map[seg] = color
+                if not neuron_loaded:
+                    self._load_neuron(name, with_children=with_children)
+                    neuron_loaded = True
+
+            else:
+                try:
+                    seg_id = int(name)
+                    total_segs.append(seg_id)
+                    current_color_map[seg_id] = color
+                except:
+                    # name is not an int number
+                    pass
 
             total_segs.extend(segs)
 

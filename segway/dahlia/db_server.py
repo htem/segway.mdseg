@@ -200,7 +200,9 @@ class Neuron():
 
         self.checked_subset = True
         if self.prevNeuron and not no_subset_check:
-            if not set(self.segments).issuperset(set(self.prevNeuron.segments)):
+            prev_segs = set(self.prevNeuron.segments)
+            prev_segs -= set(self.children_segments)
+            if not set(self.segments).issuperset(prev_segs):
                 self.checked_subset = False
 
         return self.checked_subset
@@ -225,7 +227,7 @@ class Neuron():
         if blacklist_segments:
             self.blacklist_segments = blacklist_segments
 
-        assert self.annotator in PREAPPROVED_ANNOTATORS
+        assert self.annotator in PREAPPROVED_ANNOTATORS, f"Annotator ({self.annotator}) not in PREAPPROVED_ANNOTATORS"
         assert self.cell_type in PREDEFINED_CELL_TYPES
 
         # TODO: check for tags consistency
@@ -238,7 +240,7 @@ class Neuron():
 
         if self.parent_segment == '' and '.' in self.name:
             self.parent_segment = self.name.rsplit('.', maxsplit=1)[0]
-        print("self.parent_segment:", self.parent_segment)
+        # print("self.parent_segment:", self.parent_segment)
 
         if len(self.uncertain_xyz) and 'uncertain_continuation' not in self.tags:
             self.tags.append('uncertain_continuation')
@@ -487,11 +489,12 @@ class NeuronDBServer():
         collection = self.backup_collection if backup else self.neurons
 
         item = collection.find_one({'neuron_name': neuron_name})
+        if item is None:
+            raise RuntimeError(f'Neuron {neuron_name} does not exist in db')
+
         prev = Neuron.from_dict(item)
         neuron = Neuron(name=neuron_name, prevNeuron=prev)
 
-        # if with_children:
-        # find children (if any) and append their segment lists
         segs = set(neuron.segments)
         blacklist_segments = set(neuron.blacklist_segments)
         children = []
@@ -543,9 +546,9 @@ class NeuronDBServer():
         if query_type:
             filtered_res = []
             for item in res:
-                if query_type != 'axon' and 'axon' in item:
+                if query_type != 'axon' and '.axon' in item:
                     continue
-                if query_type != 'dendrite' and 'dendrite' in item:
+                if query_type != 'dendrite' and '.dendrite' in item:
                     continue
                 filtered_res.append(item)
 
@@ -555,12 +558,13 @@ class NeuronDBServer():
     def find_neuron_with_segment_id(self, segment_id):
         item = self.segments.find_one({'segment_id': segment_id})
         if item:
+            return item['neuron_name']
             # print(item)
-            name = item['neuron_name']
-            if '.' in name:
-                return name.rsplit('.')[0]
-            else:
-                return name
+            # name = item['neuron_name']
+            # if '.' in name:
+            #     return name.rsplit('.')[0]
+            # else:
+            #     return name
         else:
             return None
 
