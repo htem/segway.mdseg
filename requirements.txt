@@ -1,6 +1,0 @@
-networkx
-scipy
-skimage
-matplotlib
-jsmin
-daisy
